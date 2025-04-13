@@ -3,6 +3,6 @@ yfinance
 pandas
 numpy
 matplotlib
-prophet
-pystan~=2.19.1.1
+prophet==1.1.6
+cmdstanpy==1.2.1
 xlsxwriter
