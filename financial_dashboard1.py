@@ -1,16 +1,18 @@
+import io
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from statsmodels.tsa.arima.model import ARIMA
 import matplotlib.pyplot as plt
-import io
 
-# Optional: Prophet for forecasting
+
 from prophet import Prophet
 
 # ----------- SETUP ----------
 st.set_page_config(page_title="Financial Dashboard", layout="wide")
-st.title("📈 Financial Data Analysis Dashboard")
+st.markdown("<h1 style='text-align: center;'>📈 Financial Data Analysis Dashboard</h1>", unsafe_allow_html=True)
+st.title("By Feisal Mussa Vuai, Economics and Financial Analyst")
 
 # ----------- SIDEBAR ----------
 section = st.sidebar.radio("📌 Choose Section", [
@@ -28,19 +30,17 @@ end_date = st.sidebar.date_input("End Date", pd.to_datetime("2024-12-31"))
 # ----------- PORTFOLIO SIMULATOR ----------
 if section == "📊 Portfolio Simulator":
     st.header("📊 Portfolio Allocation Simulator")
-
     tickers = st.multiselect("Select Assets", default_tickers, default=['AAPL', 'TSLA'])
 
-    weights = []
-    for t in tickers:
-        weights.append(st.slider(f"Weight for {t}", 0.0, 1.0, 1/len(tickers)))
-    
-    weights = np.array(weights)
-    weights /= weights.sum()  # Normalize
-
     if tickers:
-        data = yf.download(tickers, start=start_date, end=end_date)['Close']
-        data = data.dropna()
+        weights = []
+        for t in tickers:
+            weights.append(st.slider(f"Weight for {t}", 0.0, 1.0, 1 / len(tickers)))
+
+        weights = np.array(weights)
+        weights /= weights.sum()  # Normalize
+
+        data = yf.download(tickers, start=start_date, end=end_date)['Close'].dropna()
         returns = data.pct_change().dropna()
         portfolio_returns = returns.dot(weights)
         cumulative_returns = (1 + portfolio_returns).cumprod()
@@ -53,8 +53,11 @@ if section == "📊 Portfolio Simulator":
 
         st.metric("📈 Annualized Return", f"{ann_return:.2%}")
         st.metric("📉 Annualized Volatility", f"{ann_vol:.2%}")
+    else:
+        st.warning("Please select at least one asset.")
 
 # ----------- VOLATILITY & RISK ----------
+
 elif section == "📉 Volatility & Risk":
     st.header("📉 Risk Metrics & Volatility")
 
@@ -120,7 +123,6 @@ elif section == "📁 Upload CSV":
 # ----------- EXPORT RESULTS ----------
 elif section == "📤 Export Results":
     st.header("📤 Export Portfolio Data to Excel")
-
     tickers = st.multiselect("Select Assets to Export", default_tickers, default=['AAPL', 'TSLA'], key="export_tickers")
 
     if tickers:
@@ -140,33 +142,66 @@ elif section == "📤 Export Results":
             file_name="portfolio_data.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    else:
+        st.warning("Please select at least one asset.")
 
 # ----------- FORECASTING ----------
+
 elif section == "🔮 Forecast Prices":
     st.header("🔮 Asset Price Forecasting with Prophet")
 
     ticker = st.selectbox("Select an asset to forecast", default_tickers, index=0)
     forecast_period = st.slider("Forecast Period (Days)", 30, 365, 90)
 
-    df = yf.download(ticker, start="2022-01-01", end=pd.to_datetime("today"))['Close'].reset_index()
-    df = df.rename(columns={'Date': 'ds', 'Close': 'y'})
+    try:
+        # Download data
+        df = yf.download(ticker, start="2022-01-01", end=pd.to_datetime("today"), group_by="ticker")
 
-    if len(df) < 100:
-        st.warning("Not enough historical data for forecasting.")
-    else:
-        model = Prophet(daily_seasonality=True)
-        model.fit(df)
+        # Flatten MultiIndex columns if needed
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in df.columns]
 
-        future = model.make_future_dataframe(periods=forecast_period)
-        forecast = model.predict(future)
+        # Try to get the close price
+        close_cols = [col for col in df.columns if 'Close' in col]
+        if not close_cols:
+            st.error("No 'Close' column found for forecasting.")
+        else:
+            close_col = close_cols[0]
+            df.reset_index(inplace=True)
 
-        st.subheader(f"📈 {ticker} Forecast (Next {forecast_period} Days)")
-        fig1 = model.plot(forecast)
-        st.pyplot(fig1)
+            if 'Date' not in df.columns:
+                df.rename(columns={'index': 'Date'}, inplace=True)
 
-        st.subheader("📊 Forecast Components")
-        fig2 = model.plot_components(forecast)
-        st.pyplot(fig2)
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
 
-        with st.expander("📄 Show Forecast Data"):
-            st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail())
+            prophet_df = df[['Date', close_col]].copy()
+            prophet_df.rename(columns={'Date': 'ds', close_col: 'y'}, inplace=True)
+
+            prophet_df.dropna(subset=['ds', 'y'], inplace=True)
+            prophet_df = prophet_df.sort_values('ds')
+
+            if len(prophet_df) < 100:
+                st.warning("Not enough historical data for reliable forecasting.")
+            elif prophet_df['y'].std() < 1e-3:
+                st.warning("Selected column has too little variation for meaningful forecasting.")
+            elif len(prophet_df) < (forecast_period / 2):
+                st.warning("Too little data for this long of a forecast. Consider reducing forecast period.")
+            else:
+                model = Prophet(daily_seasonality=True)
+                model.fit(prophet_df)
+
+                future = model.make_future_dataframe(periods=forecast_period)
+                forecast = model.predict(future)
+
+                st.subheader(f"📈 {ticker} Close Price Forecast (Next {forecast_period} Days)")
+                fig1 = model.plot(forecast)
+                st.pyplot(fig1)
+
+                st.subheader("📊 Forecast Components")
+                fig2 = model.plot_components(forecast)
+                st.pyplot(fig2)
+
+                st.subheader("📄 Forecast Data")
+                st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail())
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {e}")
