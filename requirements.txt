@@ -6,3 +6,4 @@ matplotlib
 prophet==1.1.6
 cmdstanpy==1.2.1
 xlsxwriter
+statsmodels
